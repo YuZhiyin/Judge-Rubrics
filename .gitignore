@@ -1,0 +1,9 @@
+@"
+artifacts/
+*.pt
+*.jsonl
+__pycache__/
+*.pyc
+*.log
+*.pkl
+"@ | Out-File -Encoding utf8 .gitignore
