@@ -10,12 +10,12 @@ from transformers import AutoTokenizer
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from EnergyORM.ebm_model import TransEBM
+from ebm_model import TransEBM
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CKPT_PATH = SCRIPT_DIR / "ebm_qwen3-4b_gsm_model.pt"
-DEFAULT_TOK_PATH = SCRIPT_DIR / "ebm_qwen3-4b_gsm_tokenizer"
+DEFAULT_CKPT_PATH = "/mnt/shared-storage-user/yuzhiyin/EnergyORM/ebm_qwen3-4b_gsm_model.pt"
+DEFAULT_TOK_PATH = "/mnt/shared-storage-user/yuzhiyin/EnergyORM/ebm_qwen3-4b_gsm_tokenizer"
 
 _SCORER_CACHE = None
 

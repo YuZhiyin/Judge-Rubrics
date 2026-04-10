@@ -411,7 +411,7 @@ class VLLMGlobalScorer:
 
 
 def build_global_scorer(
-    model: str = "",
+    model: str = "/mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B",
     base_url: str = "http://localhost:8000/v1",
     api_key: str = "EMPTY",
     scale_max: int = 5,

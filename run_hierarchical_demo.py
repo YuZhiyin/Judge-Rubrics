@@ -7,11 +7,11 @@ import sys
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from EnergyORM.global_scorer import build_global_scorer
-from EnergyORM.group_scorer import GroupRubricScorer
-from EnergyORM.hierarchical_scorer import HierarchicalRubricScorer, HierarchicalWeights
-from EnergyORM.prepare_hierarchical_data import DEFAULT_ARTIFACT_DIR, DEFAULT_INPUT_FILE, ensure_training_artifacts
-from EnergyORM.score import LocalQualityScorer
+from global_scorer import build_global_scorer
+from group_scorer import GroupRubricScorer, build_group_artifact, save_group_artifact
+from hierarchical_scorer import HierarchicalRubricScorer, HierarchicalWeights
+from prepare_hierarchical_data import DEFAULT_ARTIFACT_DIR, DEFAULT_INPUT_FILE, prepare_dataset_splits, save_jsonl
+from score import LocalQualityScorer
 
 
 def load_jsonl(path: Path) -> List[Dict]:
@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", default=None)
     parser.add_argument("--local-ckpt", default=None)
     parser.add_argument("--local-tokenizer", default=None)
-    parser.add_argument("--vllm-model", default="")
+    parser.add_argument("--vllm-model", default="/mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B")
     parser.add_argument("--vllm-base-url", default="http://localhost:8000/v1")
     parser.add_argument("--local-weight", type=float, default=1.0)
     parser.add_argument("--group-weight", type=float, default=1.0)

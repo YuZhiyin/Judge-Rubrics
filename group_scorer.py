@@ -12,7 +12,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from EnergyORM.domain_mapping import infer_domain
+from domain_mapping import infer_domain
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
