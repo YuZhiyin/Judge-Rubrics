@@ -8,9 +8,9 @@ if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from EnergyORM.global_scorer import build_global_scorer
-from EnergyORM.group_scorer import GroupRubricScorer, build_group_artifact, save_group_artifact
+from EnergyORM.group_scorer import GroupRubricScorer
 from EnergyORM.hierarchical_scorer import HierarchicalRubricScorer, HierarchicalWeights
-from EnergyORM.prepare_hierarchical_data import DEFAULT_ARTIFACT_DIR, DEFAULT_INPUT_FILE, prepare_dataset_splits, save_jsonl
+from EnergyORM.prepare_hierarchical_data import DEFAULT_ARTIFACT_DIR, DEFAULT_INPUT_FILE, ensure_training_artifacts
 from EnergyORM.score import LocalQualityScorer
 
 
@@ -24,32 +24,17 @@ def load_jsonl(path: Path) -> List[Dict]:
     return records
 
 
-def ensure_artifacts(input_file: Path, artifact_dir: Path, test_ratio: float, seed: int) -> Dict[str, Path]:
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    train_file = artifact_dir / "openrubrics_train.jsonl"
-    test_file = artifact_dir / "openrubrics_test.jsonl"
-    group_artifact = artifact_dir / "group_centroids.pkl"
-
-    if not train_file.exists() or not test_file.exists():
-        train_records, test_records, _ = prepare_dataset_splits(
-            input_file=str(input_file),
-            hf_dataset=None,
-            hf_split="train",
-            test_ratio=test_ratio,
-            seed=seed,
-        )
-        save_jsonl(train_records, train_file)
-        save_jsonl(test_records, test_file)
-
-    if not group_artifact.exists():
-        train_records = load_jsonl(train_file)
-        artifact = build_group_artifact(train_records, rubric_key="rubric")
-        save_group_artifact(artifact, group_artifact)
-
+def ensure_artifacts(input_file: Path, artifact_dir: Path) -> Dict[str, Path]:
+    artifacts = ensure_training_artifacts(
+        input_file=str(input_file),
+        artifact_dir=str(artifact_dir),
+        hf_dataset=None,
+        hf_split="train",
+        overwrite=False,
+    )
     return {
-        "train_file": train_file,
-        "test_file": test_file,
-        "group_artifact": group_artifact,
+        "train_file": artifacts["train_file"],
+        "group_artifact": artifacts["group_artifact"],
     }
 
 
@@ -67,8 +52,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local-weight", type=float, default=1.0)
     parser.add_argument("--group-weight", type=float, default=1.0)
     parser.add_argument("--global-weight", type=float, default=1.0)
-    parser.add_argument("--test-ratio", type=float, default=0.2)
-    parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
 
 
@@ -77,8 +60,6 @@ def main() -> None:
     artifact_paths = ensure_artifacts(
         input_file=Path(args.input_file),
         artifact_dir=Path(args.artifact_dir),
-        test_ratio=args.test_ratio,
-        seed=args.seed,
     )
 
     if args.instruction and args.rubric:
@@ -88,10 +69,10 @@ def main() -> None:
             "source": args.source or "",
         }
     else:
-        test_records = load_jsonl(artifact_paths["test_file"])
-        if not test_records:
-            raise ValueError("No test records found for smoke test.")
-        example = test_records[0]
+        train_records = load_jsonl(artifact_paths["train_file"])
+        if not train_records:
+            raise ValueError("No OpenRubrics training records found for smoke test.")
+        example = train_records[0]
 
     local_scorer = LocalQualityScorer(
         ckpt_path=args.local_ckpt,

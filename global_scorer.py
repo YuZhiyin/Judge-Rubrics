@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 from dataclasses import dataclass
@@ -15,7 +16,8 @@ PRINCIPLE_LABELS = {
 
 
 GLOBAL_SYSTEM_PROMPT = (
-    "You are a strict rubric designer. Score rubric quality and return only valid JSON."
+    "You are a strict rubric designer. Score rubric quality and return only valid JSON. "
+    "Do not wrap the answer in markdown fences."
 )
 
 GLOBAL_USER_PROMPT = """Evaluate the rubric for the given instruction.
@@ -39,6 +41,11 @@ Return JSON only with this schema:
   "non_redundancy": {{"score": <int>, "reason": "<short reason>"}},
   "discriminative": {{"score": <int>, "reason": "<short reason>"}}
 }}
+
+Important:
+- Return exactly one JSON object and nothing else.
+- Do not use markdown code fences.
+- Use the exact keys: coverage, specificity, non_redundancy, discriminative.
 """
 
 
@@ -55,21 +62,164 @@ def clamp_score(score: float, scale_max: int) -> float:
     return max(1.0, min(float(scale_max), float(score)))
 
 
-def _extract_json_blob(text: str) -> Optional[Dict]:
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+def _coerce_score_value(value) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    return float(match.group(0)) if match else 1.0
 
-    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+
+def _strip_code_fences(text: str) -> str:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _normalize_quotes(text: str) -> str:
+    replacements = {
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u00a0": " ",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
+
+
+def _jsonish_cleanup(text: str) -> str:
+    text = _normalize_quotes(_strip_code_fences(text))
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    text = re.sub(r"\bNone\b", "null", text)
+    text = re.sub(r"\bTrue\b", "true", text)
+    text = re.sub(r"\bFalse\b", "false", text)
+    return text.strip()
+
+
+def _extract_balanced_json_candidates(text: str) -> List[str]:
+    candidates: List[str] = []
+    stack = []
+    start = None
+    for index, char in enumerate(text):
+        if char == "{":
+            if not stack:
+                start = index
+            stack.append(char)
+        elif char == "}":
+            if stack:
+                stack.pop()
+                if not stack and start is not None:
+                    candidates.append(text[start : index + 1])
+                    start = None
+    return candidates
+
+
+def _coerce_payload(payload: Dict) -> Optional[Dict]:
+    if not isinstance(payload, dict):
+        return None
+    if all(key in payload for key in PRINCIPLE_LABELS):
+        return payload
+
+    nested_candidates = [
+        payload.get("scores"),
+        payload.get("dimensions"),
+        payload.get("result"),
+        payload.get("rubric_scores"),
+    ]
+    for nested in nested_candidates:
+        if isinstance(nested, dict) and all(key in nested for key in PRINCIPLE_LABELS):
+            return nested
+
+    alias_map = {
+        "coverage": "coverage",
+        "comprehensive coverage": "coverage",
+        "specificity": "specificity",
+        "specific and actionable": "specificity",
+        "non redundancy": "non_redundancy",
+        "non-redundancy": "non_redundancy",
+        "non_redundancy": "non_redundancy",
+        "discriminative": "discriminative",
+    }
+    normalized = {}
+    for raw_key, value in payload.items():
+        canon = alias_map.get(str(raw_key).strip().lower())
+        if canon:
+            normalized[canon] = value
+    return normalized if all(key in normalized for key in PRINCIPLE_LABELS) else None
+
+
+def _try_parse_json_payload(candidate: str) -> Optional[Dict]:
+    variants = [candidate, _jsonish_cleanup(candidate)]
+    for variant in variants:
+        try:
+            payload = json.loads(variant)
+            coerced = _coerce_payload(payload)
+            if coerced is not None:
+                return coerced
+        except json.JSONDecodeError:
+            pass
+        try:
+            payload = ast.literal_eval(variant)
+            coerced = _coerce_payload(payload)
+            if coerced is not None:
+                return coerced
+        except Exception:
+            pass
+    return None
+
+
+def _extract_json_blob(text: str) -> Optional[Dict]:
+    text = _jsonish_cleanup(text)
+    payload = _try_parse_json_payload(text)
+    if payload is not None:
+        return payload
+
+    for candidate in _extract_balanced_json_candidates(text):
+        payload = _try_parse_json_payload(candidate)
+        if payload is not None:
+            return payload
+    return None
+
+
+def _extract_dimension_from_text(text: str, key: str, label: str) -> Optional[Dict[str, object]]:
+    aliases = [
+        key,
+        key.replace("_", " "),
+        key.replace("_", "-"),
+        label.lower(),
+        label.lower().replace("-", " "),
+    ]
+    escaped = "|".join(re.escape(alias) for alias in aliases)
+    pattern = (
+        rf"(?is)(?:^|\n|\r)\s*(?:[-*]?\s*)?(?:{escaped})\s*[:：-]?\s*"
+        rf"(?:score\s*[:：]?\s*)?(?P<score>\d+(?:\.\d+)?)"
+        rf"(?:\s*/\s*\d+(?:\.\d+)?)?"
+        rf"(?P<rest>.*?)(?=(?:\n\s*(?:[-*]?\s*)?(?:coverage|specificity|non[\s_-]?redundancy|discriminative)\b)|\Z)"
+    )
+    match = re.search(pattern, text)
     if not match:
         return None
+    rest = re.sub(r"(?is)^(?:\s*[-–—]\s*|\s*reason\s*[:：]\s*)", "", match.group("rest") or "").strip()
+    rest = re.sub(r"\s+", " ", rest).strip(" -:\n\r\t")
+    return {
+        "score": float(match.group("score")),
+        "reason": rest,
+    }
 
-    try:
-        return json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
+
+def _extract_structured_scores_from_text(text: str) -> Optional[Dict]:
+    cleaned = _normalize_quotes(_strip_code_fences(text))
+    cleaned = re.sub(r"[*_`]", "", cleaned)
+    payload = {}
+    for key, label in PRINCIPLE_LABELS.items():
+        item = _extract_dimension_from_text(cleaned, key, label)
+        if item is None:
+            return None
+        payload[key] = item
+    return payload
 
 
 @dataclass
@@ -191,6 +341,10 @@ class VLLMGlobalScorer:
 
     def _parse_response(self, content: str) -> Dict[str, object]:
         payload = _extract_json_blob(content)
+        parse_mode = "json"
+        if payload is None:
+            payload = _extract_structured_scores_from_text(content)
+            parse_mode = "text_recovery"
         if payload is None:
             raise ValueError("Could not parse JSON from global scorer output.")
 
@@ -198,17 +352,25 @@ class VLLMGlobalScorer:
         scores = []
         for key, label in PRINCIPLE_LABELS.items():
             item = payload.get(key, {})
-            score = clamp_score(item.get("score", 1), self.scale_max)
+            if isinstance(item, dict):
+                raw_score = item.get("score", 1)
+                reason = str(item.get("reason", "")).strip()
+            else:
+                raw_score = item
+                reason = ""
+            score = clamp_score(_coerce_score_value(raw_score), self.scale_max)
             scores.append(score)
             dimensions[key] = {
                 "label": label,
                 "score": score,
-                "reason": str(item.get("reason", "")).strip(),
+                "reason": reason,
             }
 
         average = sum(scores) / len(scores)
         return {
             "backend": "vllm",
+            "parse_mode": parse_mode,
+            "raw_model_output": content,
             "scale_max": self.scale_max,
             "dimensions": dimensions,
             "average_raw_score": average,

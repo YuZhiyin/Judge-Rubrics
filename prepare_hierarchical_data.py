@@ -21,6 +21,10 @@ from EnergyORM.domain_mapping import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_INPUT_FILE = SCRIPT_DIR / "OpenRubrics.jsonl"
 DEFAULT_ARTIFACT_DIR = SCRIPT_DIR / "artifacts"
+DEFAULT_TRAIN_OUTPUT = DEFAULT_ARTIFACT_DIR / "openrubrics_train.jsonl"
+DEFAULT_WITH_DOMAIN_OUTPUT = DEFAULT_ARTIFACT_DIR / "openrubrics_with_domain.jsonl"
+DEFAULT_STATS_OUTPUT = DEFAULT_ARTIFACT_DIR / "openrubrics_domain_stats.json"
+DEFAULT_GROUP_ARTIFACT = DEFAULT_ARTIFACT_DIR / "group_centroids.pkl"
 
 
 def load_records(input_file: Optional[str] = None, hf_dataset: Optional[str] = None, hf_split: str = "train") -> List[Dict]:
@@ -94,8 +98,72 @@ def prepare_dataset_splits(
     return train_records, test_records, summary
 
 
+def prepare_training_corpus(
+    input_file: Optional[str],
+    hf_dataset: Optional[str],
+    hf_split: str,
+) -> Tuple[List[Dict], Dict[str, object]]:
+    records = load_records(input_file=input_file, hf_dataset=hf_dataset, hf_split=hf_split)
+    records = attach_domain_to_records(records)
+    summary = build_domain_summary(records)
+    summary["train_size"] = len(records)
+    summary["test_size"] = 0
+    summary["split_mode"] = "full_openrubrics_as_train"
+    return records, summary
+
+
+def ensure_training_artifacts(
+    input_file: Optional[str] = str(DEFAULT_INPUT_FILE),
+    artifact_dir: Optional[str] = str(DEFAULT_ARTIFACT_DIR),
+    hf_dataset: Optional[str] = None,
+    hf_split: str = "train",
+    overwrite: bool = False,
+) -> Dict[str, Path]:
+    artifact_root = Path(artifact_dir or DEFAULT_ARTIFACT_DIR)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+
+    train_output = artifact_root / "openrubrics_train.jsonl"
+    with_domain_output = artifact_root / "openrubrics_with_domain.jsonl"
+    stats_output = artifact_root / "openrubrics_domain_stats.json"
+    group_artifact = artifact_root / "group_centroids.pkl"
+
+    rebuild_training_files = overwrite or not train_output.exists() or not with_domain_output.exists() or not stats_output.exists()
+    if not rebuild_training_files and stats_output.exists():
+        try:
+            existing_summary = json.loads(stats_output.read_text(encoding="utf-8"))
+            if existing_summary.get("split_mode") != "full_openrubrics_as_train":
+                rebuild_training_files = True
+        except Exception:
+            rebuild_training_files = True
+
+    if rebuild_training_files:
+        train_records, summary = prepare_training_corpus(
+            input_file=input_file,
+            hf_dataset=hf_dataset,
+            hf_split=hf_split,
+        )
+        save_jsonl(train_records, train_output)
+        save_jsonl(train_records, with_domain_output)
+        stats_output.write_text(pretty_print_summary(summary), encoding="utf-8")
+
+    if rebuild_training_files or overwrite or not group_artifact.exists():
+        from EnergyORM.group_scorer import build_group_artifact, save_group_artifact
+
+        train_records = load_records(input_file=str(train_output), hf_dataset=None, hf_split="train")
+        artifact = build_group_artifact(train_records, rubric_key="rubric")
+        save_group_artifact(artifact, group_artifact)
+
+    return {
+        "artifact_dir": artifact_root,
+        "train_file": train_output,
+        "with_domain_file": with_domain_output,
+        "stats_file": stats_output,
+        "group_artifact": group_artifact,
+    }
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Prepare OpenRubrics train/test files with domain labels.")
+    parser = argparse.ArgumentParser(description="Prepare OpenRubrics training artifacts with domain labels.")
     parser.add_argument("--input-file", default=str(DEFAULT_INPUT_FILE), help="Local JSONL input file.")
     parser.add_argument("--hf-dataset", default=None, help="Optional HF dataset name if no local file is used.")
     parser.add_argument("--hf-split", default="train")
@@ -106,6 +174,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--stats-output", default=None)
     parser.add_argument("--test-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--split-test-set",
+        action="store_true",
+        help="If set, keep the old behavior of splitting OpenRubrics into train/test. "
+        "By default the full dataset is treated as training data.",
+    )
+    parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
 
 
@@ -115,30 +190,46 @@ def main() -> None:
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     train_output = Path(args.train_output) if args.train_output else artifact_dir / "openrubrics_train.jsonl"
-    test_output = Path(args.test_output) if args.test_output else artifact_dir / "openrubrics_test.jsonl"
     with_domain_output = (
         Path(args.with_domain_output) if args.with_domain_output else artifact_dir / "openrubrics_with_domain.jsonl"
     )
     stats_output = Path(args.stats_output) if args.stats_output else artifact_dir / "openrubrics_domain_stats.json"
 
-    train_records, test_records, summary = prepare_dataset_splits(
+    if args.split_test_set:
+        test_output = Path(args.test_output) if args.test_output else artifact_dir / "openrubrics_test.jsonl"
+        train_records, test_records, summary = prepare_dataset_splits(
+            input_file=args.input_file,
+            hf_dataset=args.hf_dataset,
+            hf_split=args.hf_split,
+            test_ratio=args.test_ratio,
+            seed=args.seed,
+        )
+
+        all_records = list(train_records) + list(test_records)
+        save_jsonl(all_records, with_domain_output)
+        save_jsonl(train_records, train_output)
+        save_jsonl(test_records, test_output)
+        stats_output.write_text(pretty_print_summary(summary), encoding="utf-8")
+
+        print(f"Saved {len(all_records)} domain-annotated records to {with_domain_output}")
+        print(f"Saved {len(train_records)} train records to {train_output}")
+        print(f"Saved {len(test_records)} test records to {test_output}")
+        print(f"Saved domain summary to {stats_output}")
+        print(pretty_print_summary(summary))
+        return
+
+    artifacts = ensure_training_artifacts(
         input_file=args.input_file,
+        artifact_dir=str(artifact_dir),
         hf_dataset=args.hf_dataset,
         hf_split=args.hf_split,
-        test_ratio=args.test_ratio,
-        seed=args.seed,
+        overwrite=args.overwrite,
     )
-
-    all_records = list(train_records) + list(test_records)
-    save_jsonl(all_records, with_domain_output)
-    save_jsonl(train_records, train_output)
-    save_jsonl(test_records, test_output)
-    stats_output.write_text(pretty_print_summary(summary), encoding="utf-8")
-
-    print(f"Saved {len(all_records)} domain-annotated records to {with_domain_output}")
-    print(f"Saved {len(train_records)} train records to {train_output}")
-    print(f"Saved {len(test_records)} test records to {test_output}")
-    print(f"Saved domain summary to {stats_output}")
+    summary = json.loads(artifacts["stats_file"].read_text(encoding="utf-8"))
+    print(f"Saved {summary['train_size']} full-training records to {artifacts['train_file']}")
+    print(f"Saved domain-annotated file to {artifacts['with_domain_file']}")
+    print(f"Saved domain summary to {artifacts['stats_file']}")
+    print(f"Saved group centroid artifact to {artifacts['group_artifact']}")
     print(pretty_print_summary(summary))
 
 
