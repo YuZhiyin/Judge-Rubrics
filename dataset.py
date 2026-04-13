@@ -56,9 +56,11 @@ class BaseChunkDS(Dataset):
         for q, cands in tqdm(self.q2cands.items(), desc="Tokenizing Groups", total=len(self.q2cands), unit="group"):
             enc_grp = []
             group_meta = {"has_correct": False}
-            sep_token_str = self.tokenizer.eos_token
-            if sep_token_str is None:
-                sep_token_str = "\n"
+            sep_token_str = (
+                self.tokenizer.sep_token
+                or self.tokenizer.eos_token
+                or "\n"
+            )
 
             for e in cands:
                 if e["label"] == 1:

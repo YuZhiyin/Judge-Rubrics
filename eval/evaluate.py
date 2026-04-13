@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np  # type: ignore
 import pandas as pd  # type: ignore
 from tqdm import tqdm  # type: ignore
+from openai import OpenAI  # type: ignore
 try:
     from vllm import LLM, SamplingParams  # type: ignore
 except ModuleNotFoundError:
@@ -38,7 +39,7 @@ except ModuleNotFoundError:
 # Shared modules live under the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from EnergyORM.prompts import (  # noqa: E402
+from prompts import (  # noqa: E402
     RUBRIC_JUDGE_SYSTEM,
     RUBRIC_JUDGE_USER_TEMPLATE,
     DIRECT_JUDGE_SYSTEM,
@@ -46,7 +47,7 @@ from EnergyORM.prompts import (  # noqa: E402
     RUBRIC_GEN_SYSTEM,
     RUBRIC_GEN_USER_TEMPLATE,
 )
-from EnergyORM.rubric_selection import build_rubric_selector, select_best_rubric, normalize_rubric_text
+from rubric_selection import build_rubric_selector, select_best_rubric, normalize_rubric_text
 
 
 # ============================================================================
@@ -295,41 +296,110 @@ def build_chat_prompt(tokenizer, system: str, user: str) -> str:
     return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
 
+def build_chat_messages(system: str, user: str) -> List[Dict[str, str]]:
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def init_generation_backend(
+    model_name_or_path: str,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    base_url: str = "",
+    api_key: str = "EMPTY",
+):
+    if base_url:
+        return {
+            "mode": "openai",
+            "model": model_name_or_path,
+            "client": OpenAI(base_url=base_url, api_key=api_key),
+            "tokenizer": None,
+        }
+
+    if LLM is None or SamplingParams is None:
+        raise ModuleNotFoundError(
+            "vllm is required for local-path inference mode. "
+            "Install/use an environment with vllm, or pass a --*_base_url to use URL mode."
+        )
+
+    llm = LLM(
+        model=model_name_or_path,
+        tensor_parallel_size=tensor_parallel_size,
+        gpu_memory_utilization=gpu_memory_utilization,
+        trust_remote_code=True,
+    )
+    return {
+        "mode": "vllm",
+        "model": model_name_or_path,
+        "llm": llm,
+        "tokenizer": llm.get_tokenizer(),
+    }
+
+
+def generate_candidates_with_backend(
+    backend,
+    prompt_payloads,
+    temperature: float,
+    max_tokens: int,
+    n: int = 1,
+):
+    if backend["mode"] == "vllm":
+        sampling = SamplingParams(temperature=temperature, max_tokens=max_tokens, n=n)
+        outputs = backend["llm"].generate(prompt_payloads, sampling)
+        return [[candidate.text for candidate in output.outputs] for output in outputs]
+
+    results = []
+    client = backend["client"]
+    for messages in prompt_payloads:
+        completion = client.chat.completions.create(
+            model=backend["model"],
+            temperature=temperature,
+            max_tokens=max_tokens,
+            n=n,
+            messages=messages,
+        )
+        results.append([(choice.message.content or "") for choice in completion.choices])
+    return results
+
+
 def _generate_best_of_n_rubrics(
     samples: List[PairwiseSample],
-    llm: LLM,
-    tokenizer,
+    backend,
     batch_size: int,
     num_candidates: int,
     temperature: float,
     max_tokens: int,
     selector,
 ) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
-    prompts: List[str] = []
+    prompt_payloads = []
     for sample in samples:
         user = RUBRIC_GEN_USER_TEMPLATE.format(
             instruction=sample.instruction,
             response_a=sample.response_a,
             response_b=sample.response_b,
         )
-        prompts.append(build_chat_prompt(tokenizer, RUBRIC_GEN_SYSTEM, user))
-
-    sampling = SamplingParams(
-        temperature=temperature,
-        max_tokens=max_tokens,
-        n=num_candidates,
-    )
+        if backend["mode"] == "vllm":
+            prompt_payloads.append(build_chat_prompt(backend["tokenizer"], RUBRIC_GEN_SYSTEM, user))
+        else:
+            prompt_payloads.append(build_chat_messages(RUBRIC_GEN_SYSTEM, user))
 
     raw_rubrics: List[str] = []
     formatted_rubrics: List[str] = []
     rubric_metadata: List[Dict[str, Any]] = []
 
-    for start in tqdm(range(0, len(prompts), batch_size), desc="generate[rubric_best_of_n]"):
-        batch_prompts = prompts[start : start + batch_size]
+    for start in tqdm(range(0, len(prompt_payloads), batch_size), desc="generate[rubric_best_of_n]"):
+        batch_prompts = prompt_payloads[start : start + batch_size]
         batch_samples = samples[start : start + batch_size]
-        outputs = llm.generate(batch_prompts, sampling)
-        for sample, output in zip(batch_samples, outputs):
-            candidates = [candidate.text for candidate in output.outputs]
+        outputs = generate_candidates_with_backend(
+            backend=backend,
+            prompt_payloads=batch_prompts,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            n=num_candidates,
+        )
+        for sample, candidates in zip(batch_samples, outputs):
             result = select_best_rubric(
                 selector=selector,
                 instruction=sample.instruction,
@@ -441,6 +511,8 @@ def main():
 
     # Model
     parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--model_base_url", type=str, default="", help="OpenAI-compatible URL for judge inference.")
+    parser.add_argument("--model_api_key", type=str, default="EMPTY", help="API key for judge URL mode.")
     parser.add_argument("--tensor_parallel_size", type=int, default=4)
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9)
     parser.add_argument("--max_tokens", type=int, default=8192)
@@ -475,8 +547,10 @@ def main():
         "--rubric_generator_model_path",
         type=str,
         default="",
-        help="Optional rubric generation model. If omitted, reuse --model_path.",
+        help="Optional rubric generation model path or model name. If omitted, reuse --model_path.",
     )
+    parser.add_argument("--rubric_generator_base_url", type=str, default="", help="OpenAI-compatible URL for rubric generator inference.")
+    parser.add_argument("--rubric_generator_api_key", type=str, default="EMPTY", help="API key for rubric generator URL mode.")
     parser.add_argument("--rubric_num_candidates", type=int, default=4)
     parser.add_argument("--rubric_generation_temperature", type=float, default=0.7)
     parser.add_argument("--rubric_generation_max_tokens", type=int, default=4096)
@@ -502,10 +576,6 @@ def main():
             "For prompt_type=rubric_judge you must provide --rubrics_file "
             "or enable --generate_rubrics_on_the_fly."
         )
-    if LLM is None or SamplingParams is None:
-        raise ModuleNotFoundError(
-            "vllm is required to run evaluate.py. Please install/use an environment with vllm available."
-        )
 
     # --- Load dataset ---
     print(f"Loading {args.benchmark} dataset...")
@@ -528,15 +598,15 @@ def main():
     print(f"Loaded {len(samples)} samples")
 
     # --- Load model ---
-    print(f"Loading model: {args.model_path}")
-    llm = LLM(
-        model=args.model_path,
+    judge_mode = "url" if args.model_base_url else "local_vllm"
+    print(f"Loading judge model: {args.model_path} [{judge_mode}]")
+    judge_backend = init_generation_backend(
+        model_name_or_path=args.model_path,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
-        trust_remote_code=True,
+        base_url=args.model_base_url,
+        api_key=args.model_api_key,
     )
-    tokenizer = llm.get_tokenizer()
-    sp = SamplingParams(temperature=0.0, max_tokens=args.max_tokens)
 
     # --- Load rubrics ---
     formatted_rubrics: List[str] = [""] * len(samples)
@@ -559,18 +629,20 @@ def main():
             )
 
             generator_model_path = args.rubric_generator_model_path or args.model_path
-            if generator_model_path == args.model_path:
-                rubric_llm = llm
-                rubric_tokenizer = tokenizer
+            generator_base_url = args.rubric_generator_base_url or args.model_base_url
+            generator_api_key = args.rubric_generator_api_key if args.rubric_generator_base_url else args.model_api_key
+            if generator_model_path == args.model_path and generator_base_url == args.model_base_url:
+                rubric_backend = judge_backend
             else:
-                print(f"Loading rubric generator model: {generator_model_path}")
-                rubric_llm = LLM(
-                    model=generator_model_path,
+                generator_mode = "url" if generator_base_url else "local_vllm"
+                print(f"Loading rubric generator model: {generator_model_path} [{generator_mode}]")
+                rubric_backend = init_generation_backend(
+                    model_name_or_path=generator_model_path,
                     tensor_parallel_size=args.tensor_parallel_size,
                     gpu_memory_utilization=args.gpu_memory_utilization,
-                    trust_remote_code=True,
+                    base_url=generator_base_url,
+                    api_key=generator_api_key,
                 )
-                rubric_tokenizer = rubric_llm.get_tokenizer()
 
             print(
                 f"Generating rubrics on the fly with strategy={args.rubric_selection_strategy}, "
@@ -578,8 +650,7 @@ def main():
             )
             rubric_raw_outputs, formatted_rubrics, rubric_selection_metadata = _generate_best_of_n_rubrics(
                 samples=samples,
-                llm=rubric_llm,
-                tokenizer=rubric_tokenizer,
+                backend=rubric_backend,
                 batch_size=args.batch_size,
                 num_candidates=args.rubric_num_candidates,
                 temperature=args.rubric_generation_temperature,
@@ -614,6 +685,7 @@ def main():
 
     # --- Build prompts ---
     prompts: List[str] = []
+    message_payloads: List[List[Dict[str, str]]] = []
     for i, s in enumerate(samples):
         if args.prompt_type == "rubric_judge":
             user = USER_TEMPLATE.format(
@@ -628,7 +700,9 @@ def main():
                 response_a=s.response_a,
                 response_b=s.response_b,
             )
-        prompts.append(build_chat_prompt(tokenizer, SYSTEM_PROMPT, user))
+        message_payloads.append(build_chat_messages(SYSTEM_PROMPT, user))
+        if judge_backend["mode"] == "vllm":
+            prompts.append(build_chat_prompt(judge_backend["tokenizer"], SYSTEM_PROMPT, user))
 
     # --- Generate ---
     print("Running inference...")
@@ -636,10 +710,18 @@ def main():
     winners: List[Optional[str]] = []
     out_lens: List[int] = []
 
-    for i in tqdm(range(0, len(prompts), args.batch_size), desc=f"generate[{args.prompt_type}]"):
-        batch = prompts[i : i + args.batch_size]
-        for o in llm.generate(batch, sp):
-            txt = o.outputs[0].text
+    payloads = prompts if judge_backend["mode"] == "vllm" else message_payloads
+    for i in tqdm(range(0, len(payloads), args.batch_size), desc=f"generate[{args.prompt_type}]"):
+        batch = payloads[i : i + args.batch_size]
+        batch_outputs = generate_candidates_with_backend(
+            backend=judge_backend,
+            prompt_payloads=batch,
+            temperature=0.0,
+            max_tokens=args.max_tokens,
+            n=1,
+        )
+        for candidates in batch_outputs:
+            txt = candidates[0] if candidates else ""
             outs_text.append(txt)
             winners.append(_parse_winner(txt))
             out_lens.append(len(txt))
@@ -704,6 +786,8 @@ def main():
                 if args.generate_rubrics_on_the_fly and args.prompt_type == "rubric_judge"
                 else ""
             ),
+            "judge_inference_mode": judge_backend["mode"],
+            "judge_base_url": args.model_base_url,
             "num_candidates": args.rubric_num_candidates if args.prompt_type == "rubric_judge" else 0,
         },
     }

@@ -13,18 +13,27 @@ Sections:
 # 1. Judge prompts  (eval/evaluate.py)
 # ============================================================================
 
-RUBRIC_JUDGE_SYSTEM = """You are a judge that uses a provided rubric to compare two responses.
+RUBRIC_JUDGE_SYSTEM = """You are a rubric-based judge using a provided rubric.
+
+## Definitions
+- Hard Rules: explicit, objective, verifiable requirements from the instruction.
+- Principles: optional subjective criteria, ONLY if needed to distinguish this specific pair.
 
 ## Process (MUST FOLLOW)
 1) Read the Instruction, Response A, Response B, and the provided Rubric.
-2) Apply the rubric to both responses.
-3) Output a single winner.
+2) Judge A vs B using the provided Hard Rules + (optional) Principles.
+3) Output a Winner.
 
 ## Output Format (MUST MATCH EXACTLY)
 
 --- Analysis ---
-Response A: ...
-Response B: ...
+**Response A:**
+- [Hard Rule/Principle]: Justification: ...
+...
+
+**Response B:**
+- [Hard Rule/Principle]: Justification: ...
+...
 
 --- Final Judgment ---
 Justification: [Concise but complete]
@@ -35,7 +44,7 @@ CRITICAL:
 - You MUST use the provided Rubric to guide your judgment.
 """
 
-RUBRIC_JUDGE_USER_TEMPLATE = """Task: Use the rubric to judge A vs B
+RUBRIC_JUDGE_USER_TEMPLATE = """Task: Rubric (Provided) -> Judge
 
 ## Instruction
 {instruction}
@@ -262,14 +271,22 @@ Please strictly output the rubric in JSON format above."""
 # 3. SFT pipeline prompts  (sft_pipeline/ – rubric generation training)
 # ============================================================================
 
-RUBRIC_GEN_SYSTEM = """You are an expert evaluator. Your task is to write a concise rubric for judging responses to the instruction.
+RUBRIC_GEN_SYSTEM = """You are an expert at generating structured evaluation rubrics for instructions.
 
-Write exactly 4 rules. Each rule must be:
-- Objective and verifiable
-- Specific enough to distinguish quality
-- Written as a short, clear sentence
+Your task is to generate a comprehensive rubric that can be used to evaluate responses to a given instruction.
 
-Output ONLY a numbered list of 4 rules. No JSON, no headings, no extra text."""
+The rubric should include:
+1. **Hard Rules**: Specific, verifiable rules that responses must follow (type: "must") or must avoid (type: "forbid")
+2. **Principles**: General guidelines for subjective evaluation
+
+Each rule must have:
+- rule_id: Unique identifier
+- type: "must" or "forbid"
+- criterion: Clear description of what to check
+- test: Verifiable test condition
+- rationale: Why this rule matters
+
+Output format: JSON with "hard_rules" and "principles" arrays."""
 
 RUBRIC_GEN_USER_TEMPLATE = """Instruction:
 {instruction}
@@ -280,5 +297,24 @@ Response A:
 Response B:
 {response_b}
 
-Write exactly 4 numbered rules that can be used to judge which response is better for this instruction.
-Output ONLY the numbered list (1-4)."""
+Generate a comprehensive evaluation rubric for this instruction. The rubric should help distinguish between different responses.
+
+Output your response as a JSON object with the following structure:
+{{
+  "hard_rules": [
+    {{
+      "rule_id": "rule_1",
+      "type": "must",
+      "criterion": "Clear description of what to check",
+      "test": "Verifiable test condition",
+      "rationale": "Why this rule matters"
+    }}
+  ],
+  "principles": [
+    {{
+      "principle_id": "principle_1",
+      "description": "General guideline for evaluation",
+      "rationale": "Why this principle is needed"
+    }}
+  ]
+}}"""

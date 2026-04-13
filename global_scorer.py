@@ -222,6 +222,33 @@ def _extract_structured_scores_from_text(text: str) -> Optional[Dict]:
     return payload
 
 
+def _extract_partial_dimension_payload(text: str) -> Optional[Dict]:
+    cleaned = _normalize_quotes(_strip_code_fences(text))
+    cleaned = re.sub(r"</?think>", " ", cleaned, flags=re.IGNORECASE)
+    payload: Dict[str, Dict[str, object]] = {}
+
+    for key in PRINCIPLE_LABELS:
+        pattern = (
+            rf'(?is)"{re.escape(key)}"\s*:\s*\{{.*?'
+            rf'"score"\s*:\s*(?P<score>"[^"]+"|[-+]?\d+(?:\.\d+)?)'
+            rf'(?:.*?"reason"\s*:\s*"(?P<reason>.*?))?'
+            rf'(?=(?:\}}\s*,?\s*"(?:coverage|specificity|non_redundancy|discriminative)"\s*:)|\}}\s*,?\s*\}}|\Z)'
+        )
+        match = re.search(pattern, cleaned)
+        if not match:
+            return None
+
+        raw_score = match.group("score")
+        reason = (match.group("reason") or "").strip()
+        reason = re.sub(r'"\s*,?\s*$', "", reason).strip()
+        payload[key] = {
+            "score": _coerce_score_value(raw_score),
+            "reason": reason,
+        }
+
+    return payload if all(key in payload for key in PRINCIPLE_LABELS) else None
+
+
 @dataclass
 class HeuristicGlobalScorer:
     scale_max: int = 5
@@ -329,7 +356,7 @@ class VLLMGlobalScorer:
         api_key: str = "EMPTY",
         scale_max: int = 5,
         temperature: float = 0.0,
-        max_tokens: int = 512,
+        max_tokens: int = 1024,
         fallback_to_heuristic: bool = True,
     ):
         self.model = model
@@ -345,6 +372,9 @@ class VLLMGlobalScorer:
         if payload is None:
             payload = _extract_structured_scores_from_text(content)
             parse_mode = "text_recovery"
+        if payload is None:
+            payload = _extract_partial_dimension_payload(content)
+            parse_mode = "partial_json_recovery"
         if payload is None:
             raise ValueError("Could not parse JSON from global scorer output.")
 
@@ -411,7 +441,7 @@ class VLLMGlobalScorer:
 
 
 def build_global_scorer(
-    model: str = "/mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B",
+    model: str = "",
     base_url: str = "http://localhost:8000/v1",
     api_key: str = "EMPTY",
     scale_max: int = 5,

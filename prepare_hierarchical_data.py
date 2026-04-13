@@ -147,7 +147,7 @@ def ensure_training_artifacts(
         stats_output.write_text(pretty_print_summary(summary), encoding="utf-8")
 
     if rebuild_training_files or overwrite or not group_artifact.exists():
-        from EnergyORM.group_scorer import build_group_artifact, save_group_artifact
+        from group_scorer import build_group_artifact, save_group_artifact
 
         train_records = load_records(input_file=str(train_output), hf_dataset=None, hf_split="train")
         artifact = build_group_artifact(train_records, rubric_key="rubric")

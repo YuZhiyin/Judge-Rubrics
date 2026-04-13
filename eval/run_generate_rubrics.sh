@@ -16,7 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # ---- Default values (override via environment or CLI flags) ----
-SFT_MODEL_PATH_DEFAULT="${SFT_MODEL_PATH_DEFAULT:-}"
+SFT_MODEL_PATH_DEFAULT="${SFT_MODEL_PATH_DEFAULT:-/mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B}"
+SFT_MODEL_BASE_URL_DEFAULT="${SFT_MODEL_BASE_URL_DEFAULT:-}"
+SFT_MODEL_API_KEY_DEFAULT="${SFT_MODEL_API_KEY_DEFAULT:-EMPTY}"
 REWARDBENCH_PARQUET_DEFAULT="${REWARDBENCH_PARQUET_DEFAULT:-${SCRIPT_DIR}/eval_dataset/reward-bench/data/filtered-00000-of-00001.parquet}"
 RMBENCH_JSON_DEFAULT="${RMBENCH_JSON_DEFAULT:-${SCRIPT_DIR}/eval_dataset/RM-Bench/total_dataset.json}"
 RMB_JSON_DEFAULT="${RMB_JSON_DEFAULT:-${SCRIPT_DIR}/eval_dataset/RMB_dataset/Pairwise_set}"
@@ -32,7 +34,7 @@ GPU_MEM_UTIL_DEFAULT="${GPU_MEM_UTIL_DEFAULT:-0.9}"
 SEED_DEFAULT="${SEED_DEFAULT:-42}"
 OUTPUT_FILE_DEFAULT="${OUTPUT_FILE_DEFAULT:-./rubrics/rubrics.jsonl}"
 SELECTION_STRATEGY_DEFAULT="${SELECTION_STRATEGY_DEFAULT:-hierarchical}"
-GLOBAL_VLLM_MODEL_DEFAULT="${GLOBAL_VLLM_MODEL_DEFAULT:-}"
+GLOBAL_VLLM_MODEL_DEFAULT="${GLOBAL_VLLM_MODEL_DEFAULT:-/mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B}"
 GLOBAL_VLLM_BASE_URL_DEFAULT="${GLOBAL_VLLM_BASE_URL_DEFAULT:-http://localhost:8000/v1}"
 
 # ---- Usage function ----
@@ -61,6 +63,8 @@ Optional:
   --max_samples N            Limit number of samples (0 = no limit, default: 0)
   --rmb_json_dir              Treat --rmb_json as directory (for rmb benchmark)
   --selection_strategy TYPE   first | local_ebm | hierarchical
+  --sft_model_base_url URL    OpenAI-compatible URL for rubric generation
+  --sft_model_api_key KEY     API key for rubric generation URL mode
   --training_artifact_dir PATH
   --local_ckpt PATH
   --local_tokenizer PATH
@@ -99,6 +103,8 @@ EOF
 
 # ---- Mutable state ----
 SFT_MODEL_PATH="${SFT_MODEL_PATH_DEFAULT}"
+SFT_MODEL_BASE_URL="${SFT_MODEL_BASE_URL_DEFAULT}"
+SFT_MODEL_API_KEY="${SFT_MODEL_API_KEY_DEFAULT}"
 BENCHMARK=""
 TEST_PARQUET="${REWARDBENCH_PARQUET_DEFAULT}"
 RMBENCH_JSON="${RMBENCH_JSON_DEFAULT}"
@@ -132,6 +138,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --benchmark)
       BENCHMARK="$2"
+      shift 2
+      ;;
+    --sft_model_base_url)
+      SFT_MODEL_BASE_URL="$2"
+      shift 2
+      ;;
+    --sft_model_api_key)
+      SFT_MODEL_API_KEY="$2"
       shift 2
       ;;
     --test_parquet)
@@ -278,12 +292,15 @@ mkdir -p "$(dirname "${OUTPUT_FILE}")"
 
 echo "==> Generating rubrics"
 echo "    sft_model_path=${SFT_MODEL_PATH}"
+[[ -n "${SFT_MODEL_BASE_URL}" ]] && echo "    sft_model_base_url=${SFT_MODEL_BASE_URL}"
 echo "    benchmark=${BENCHMARK}"
 echo "    output_file=${OUTPUT_FILE}"
 
 cmd=(
   "${PYTHON_BIN}" "${SCRIPT_DIR}/generate_rubrics.py"
   --sft_model_path         "${SFT_MODEL_PATH}"
+  --sft_model_base_url     "${SFT_MODEL_BASE_URL}"
+  --sft_model_api_key      "${SFT_MODEL_API_KEY}"
   --benchmark              "${BENCHMARK}"
   --output_file            "${OUTPUT_FILE}"
   --batch_size             "${BATCH_SIZE}"

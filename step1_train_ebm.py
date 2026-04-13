@@ -33,7 +33,8 @@ from EnergyORM.utils import (
 
 script_directory = os.path.dirname(os.path.abspath(__file__))
 
-default_generated_data_path = os.path.join(script_directory, "artifacts", "local_quality_train.jsonl")
+# default_generated_data_path = os.path.join(script_directory, "artifacts", "local_quality_train.jsonl")
+default_generated_data_path = "/mnt/shared-storage-user/yuzhiyin/EnergyORM/demo_dataset/output_sorted.jsonl"
 default_demo_data_path = os.path.join(script_directory, "demo_dataset", "sorted_final_merged.jsonl")
 default_data_path = default_generated_data_path if os.path.exists(default_generated_data_path) else default_demo_data_path
 
@@ -221,7 +222,7 @@ if __name__ == "__main__":
     p.add_argument("--val_holdout", type=float, default=0.2, help="Fraction of training data to hold out for validation (e.g., 0.2 for 20%)")
 
     # Model Args
-    p.add_argument("--tok", default="gpt2", help="HuggingFace tokenizer name or local path")
+    p.add_argument("--tok", default="/mnt/shared-storage-user/ma4tool-shared/hug_ckpts/gpt2", help="HuggingFace tokenizer name or local path")
     p.add_argument("--embed_dim", type=int, default=768, help="Model embedding dimension")
     p.add_argument("--n_layers", type=int, default=2, help="Number of Transformer encoder layers")
     p.add_argument("--n_heads", type=int, default=4, help="Number of attention heads")

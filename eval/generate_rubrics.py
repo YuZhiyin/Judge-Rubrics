@@ -22,22 +22,20 @@ from typing import Any, Dict, List
 
 import numpy as np  
 from tqdm import tqdm  
-try:
-    from vllm import LLM, SamplingParams  
-except ModuleNotFoundError:
-    LLM = None  # type: ignore
-    SamplingParams = None  # type: ignore
 
 # Shared modules live under the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from EnergyORM.prompts import RUBRIC_GEN_SYSTEM, RUBRIC_GEN_USER_TEMPLATE
-from EnergyORM.eval.evaluate import (  
+from prompts import RUBRIC_GEN_SYSTEM, RUBRIC_GEN_USER_TEMPLATE
+from eval.evaluate import (  
     PairwiseSample,
     load_rewardbench,
     load_rmbench,
     load_rmb,
     build_chat_prompt,
+    build_chat_messages,
+    init_generation_backend,
+    generate_candidates_with_backend,
 )
 from EnergyORM.rubric_selection import build_rubric_selector, select_best_rubric, normalize_rubric_text
 
@@ -111,7 +109,9 @@ def main():
     parser = argparse.ArgumentParser(description="Generate pairwise rubrics using a fine-tuned SFT model")
 
     # Model
-    parser.add_argument("--sft_model_path", type=str, required=True, help="Path to the rubric-generation SFT model")
+    parser.add_argument("--sft_model_path", type=str, required=True, help="Local rubric-generator path or remote model name.")
+    parser.add_argument("--sft_model_base_url", type=str, default="", help="OpenAI-compatible URL for rubric generation.")
+    parser.add_argument("--sft_model_api_key", type=str, default="EMPTY", help="API key for rubric generation URL mode.")
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--tensor_parallel_size", type=int, default=4)
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9)
@@ -154,10 +154,6 @@ def main():
     parser.add_argument("--output_file", type=str, required=True, help="Output JSONL file path")
 
     args = parser.parse_args()
-    if LLM is None or SamplingParams is None:
-        raise ModuleNotFoundError(
-            "vllm is required to run generate_rubrics.py. Please install/use an environment with vllm available."
-        )
 
     # --- Load dataset ---
     if args.benchmark == "rewardbench":
@@ -183,24 +179,28 @@ def main():
     print(f"Loaded {len(samples)} samples")
 
     # --- Load SFT model ---
-    print(f"Loading SFT model: {args.sft_model_path}")
-    llm = LLM(
-        model=args.sft_model_path,
+    generation_mode = "url" if args.sft_model_base_url else "local_vllm"
+    print(f"Loading SFT model: {args.sft_model_path} [{generation_mode}]")
+    backend = init_generation_backend(
+        model_name_or_path=args.sft_model_path,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
-        trust_remote_code=True,
+        base_url=args.sft_model_base_url,
+        api_key=args.sft_model_api_key,
     )
-    tokenizer = llm.get_tokenizer()
 
     # --- Build prompts ---
     prompts: List[str] = []
+    message_payloads: List[List[Dict[str, str]]] = []
     for s in samples:
         user = RUBRIC_GEN_USER_TEMPLATE.format(
             instruction=s.instruction,
             response_a=s.response_a,
             response_b=s.response_b,
         )
-        prompts.append(build_chat_prompt(tokenizer, RUBRIC_GEN_SYSTEM, user))
+        message_payloads.append(build_chat_messages(RUBRIC_GEN_SYSTEM, user))
+        if backend["mode"] == "vllm":
+            prompts.append(build_chat_prompt(backend["tokenizer"], RUBRIC_GEN_SYSTEM, user))
 
     # --- Build rubric selector ---
     selector = build_rubric_selector(
@@ -218,11 +218,6 @@ def main():
     )
 
     # --- Generate rubrics ---
-    sp = SamplingParams(
-        temperature=args.temperature,
-        max_tokens=args.max_tokens,
-        n=args.num_candidates,
-    )
     raw_outputs: List[str] = []
     formatted: List[str] = []
     candidates_all: List[List[str]] = []
@@ -230,11 +225,18 @@ def main():
     selection_details_all: List[List[Dict[str, Any]]] = []
 
     print("Generating rubrics...")
-    for i in tqdm(range(0, len(prompts), args.batch_size), desc="generate rubrics"):
-        batch = prompts[i : i + args.batch_size]
+    payloads = prompts if backend["mode"] == "vllm" else message_payloads
+    for i in tqdm(range(0, len(payloads), args.batch_size), desc="generate rubrics"):
+        batch = payloads[i : i + args.batch_size]
         batch_samples = samples[i : i + args.batch_size]
-        for s, o in zip(batch_samples, llm.generate(batch, sp)):
-            cands = [out.text for out in o.outputs]
+        batch_outputs = generate_candidates_with_backend(
+            backend=backend,
+            prompt_payloads=batch,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+            n=args.num_candidates,
+        )
+        for s, cands in zip(batch_samples, batch_outputs):
             if not cands:
                 cands = [""]
             selection_result = select_best_rubric(

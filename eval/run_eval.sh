@@ -15,6 +15,8 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 
 # ---- Default values (override via environment or CLI flags) ----
 MODEL_PATH_DEFAULT="${MODEL_PATH_DEFAULT:-}"
+MODEL_BASE_URL_DEFAULT="${MODEL_BASE_URL_DEFAULT:-}"
+MODEL_API_KEY_DEFAULT="${MODEL_API_KEY_DEFAULT:-EMPTY}"
 REWARDBENCH_PARQUET_DEFAULT="${REWARDBENCH_PARQUET_DEFAULT:-${SCRIPT_DIR}/eval_dataset/reward-bench/data/filtered-00000-of-00001.parquet}"
 RMBENCH_JSON_DEFAULT="${RMBENCH_JSON_DEFAULT:-${SCRIPT_DIR}/eval_dataset/RM-Bench/total_dataset.json}"
 RMB_JSON_DEFAULT="${RMB_JSON_DEFAULT:-${SCRIPT_DIR}/eval_dataset/RMB_dataset/Pairwise_set}"
@@ -53,6 +55,8 @@ Conditional:
 
 Optional:
   --output_root PATH          Output root directory (default: ./eval_results)
+  --model_base_url URL        OpenAI-compatible URL for judge inference
+  --model_api_key KEY         API key for judge URL mode
   --batch_size N              Batch size (default: ${BATCH_SIZE_DEFAULT})
   --tensor_parallel_size N     Tensor parallel size (default: ${TP_DEFAULT})
   --gpu_memory_utilization F  GPU memory utilization (default: ${GPU_MEM_UTIL_DEFAULT})
@@ -62,6 +66,8 @@ Optional:
   --max_samples N             Limit number of samples (0 = no limit, default: 0)
   --rmb_json_dir              Treat --rmb_json as directory (for rmb benchmark)
   --rubric_generator_model_path PATH
+  --rubric_generator_base_url URL
+  --rubric_generator_api_key KEY
   --rubric_num_candidates N
   --rubric_generation_temperature F
   --rubric_generation_max_tokens N
@@ -105,6 +111,8 @@ EOF
 BENCHMARK=""
 PROMPT_TYPE=""
 MODEL_PATH="${MODEL_PATH_DEFAULT}"
+MODEL_BASE_URL="${MODEL_BASE_URL_DEFAULT}"
+MODEL_API_KEY="${MODEL_API_KEY_DEFAULT}"
 RUBRICS_FILE=""
 TEST_PARQUET="${REWARDBENCH_PARQUET_DEFAULT}"
 RMBENCH_JSON="${RMBENCH_JSON_DEFAULT}"
@@ -118,6 +126,8 @@ GLOBAL_VLLM_MODEL=""
 GLOBAL_VLLM_BASE_URL="http://localhost:8000/v1"
 GENERATE_RUBRICS_ON_THE_FLY="0"
 RUBRIC_GENERATOR_MODEL_PATH=""
+RUBRIC_GENERATOR_BASE_URL=""
+RUBRIC_GENERATOR_API_KEY="EMPTY"
 RUBRIC_NUM_CANDIDATES="4"
 RUBRIC_GENERATION_TEMPERATURE="0.7"
 RUBRIC_GENERATION_MAX_TOKENS="4096"
@@ -143,6 +153,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --benchmark)
       BENCHMARK="$2"
+      shift 2
+      ;;
+    --model_base_url)
+      MODEL_BASE_URL="$2"
+      shift 2
+      ;;
+    --model_api_key)
+      MODEL_API_KEY="$2"
       shift 2
       ;;
     --prompt_type)
@@ -207,6 +225,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --rubric_generator_model_path)
       RUBRIC_GENERATOR_MODEL_PATH="$2"
+      shift 2
+      ;;
+    --rubric_generator_base_url)
+      RUBRIC_GENERATOR_BASE_URL="$2"
+      shift 2
+      ;;
+    --rubric_generator_api_key)
+      RUBRIC_GENERATOR_API_KEY="$2"
       shift 2
       ;;
     --rubric_num_candidates)
@@ -322,6 +348,7 @@ mkdir -p "${OUT_DIR}"
 echo "==> Running evaluation"
 echo "    benchmark=${BENCHMARK}  prompt_type=${PROMPT_TYPE}"
 echo "    model_path=${MODEL_PATH}"
+[[ -n "${MODEL_BASE_URL}" ]] && echo "    model_base_url=${MODEL_BASE_URL}"
 [[ -n "${RUBRICS_FILE}" ]] && echo "    rubrics_file=${RUBRICS_FILE}"
 echo "    output_dir=${OUT_DIR}"
 
@@ -330,6 +357,8 @@ cmd=(
   --benchmark    "${BENCHMARK}"
   --prompt_type  "${PROMPT_TYPE}"
   --model_path   "${MODEL_PATH}"
+  --model_base_url "${MODEL_BASE_URL}"
+  --model_api_key "${MODEL_API_KEY}"
   --output_dir   "${OUT_DIR}"
   --batch_size   "${BATCH_SIZE}"
   --tensor_parallel_size "${TP}"
@@ -362,6 +391,8 @@ if [[ "${GENERATE_RUBRICS_ON_THE_FLY}" == "1" ]]; then
   cmd+=(
     --generate_rubrics_on_the_fly
     --rubric_generator_model_path "${RUBRIC_GENERATOR_MODEL_PATH}"
+    --rubric_generator_base_url "${RUBRIC_GENERATOR_BASE_URL}"
+    --rubric_generator_api_key "${RUBRIC_GENERATOR_API_KEY}"
     --rubric_num_candidates "${RUBRIC_NUM_CANDIDATES}"
     --rubric_generation_temperature "${RUBRIC_GENERATION_TEMPERATURE}"
     --rubric_generation_max_tokens "${RUBRIC_GENERATION_MAX_TOKENS}"
