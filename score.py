@@ -1,7 +1,8 @@
+import json
 import math
 import re
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 import sys
 
 import torch
@@ -10,14 +11,34 @@ from transformers import AutoTokenizer
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from ebm_model import TransEBM
+from Judge_Rubrics.ebm_model import TransEBM
+from Judge_Rubrics.step1_train_ebm_v3_pretrained import PretrainedEnergyScorer
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CKPT_PATH = "/mnt/shared-storage-user/yuzhiyin/EnergyORM/ebm_qwen3-4b_gsm_model.pt"
-DEFAULT_TOK_PATH = "/mnt/shared-storage-user/yuzhiyin/EnergyORM/ebm_qwen3-4b_gsm_tokenizer"
+DEFAULT_CKPT_PATH = SCRIPT_DIR / "ebm_qwen3-4b_gsm_model.pt"
+DEFAULT_TOK_PATH = SCRIPT_DIR / "ebm_qwen3-4b_gsm_tokenizer"
 
 _SCORER_CACHE = None
+
+
+def _default_cfg_path_from_ckpt(ckpt_path: str) -> Path:
+    ckpt = Path(ckpt_path)
+    name = ckpt.name
+    if name.endswith("_model.pt"):
+        return ckpt.with_name(name[:-len("_model.pt")] + "_config.json")
+    if ckpt.suffix == ".pt":
+        return ckpt.with_suffix(".json")
+    return ckpt.with_name(ckpt.name + "_config.json")
+
+
+def _load_optional_config(ckpt_path: str) -> Dict[str, Any]:
+    cfg_path = _default_cfg_path_from_ckpt(ckpt_path)
+    if not cfg_path.exists():
+        return {}
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, dict) else {}
 
 
 def load_ebm_scorer(
@@ -32,6 +53,7 @@ def load_ebm_scorer(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    cfg = _load_optional_config(ckpt_path)
     tok = AutoTokenizer.from_pretrained(tok_path)
 
     if tok.pad_token_id is None:
@@ -40,27 +62,50 @@ def load_ebm_scorer(
         else:
             tok.add_special_tokens({"pad_token": "[PAD]"})
 
-    if tok.bos_token_id is not None:
-        cls_id = tok.bos_token_id
-    elif tok.cls_token_id is not None:
+    if tok.cls_token_id is not None:
         cls_id = tok.cls_token_id
+    elif tok.bos_token_id is not None:
+        cls_id = tok.bos_token_id
     else:
         cls_id = tok.eos_token_id
 
     pad_id = tok.pad_token_id
 
-    model = TransEBM(
-        vocab_size=len(tok),
-        d_model=d_model,
-        n_heads=n_heads,
-        n_layers=n_layers,
-        dropout=dropout,
-    ).to(device)
-
-    if len(tok) != model.emb.num_embeddings:
-        model.resize_token_embeddings(len(tok))
-
     state = torch.load(ckpt_path, map_location=device)
+    is_pretrained = (
+        cfg.get("arch") == "PretrainedEnergyScorer"
+        or any(str(k).startswith("backbone.") for k in state.keys())
+    )
+
+    if is_pretrained:
+        backbone = cfg.get("backbone")
+        if not backbone:
+            raise ValueError(
+                f"Checkpoint {ckpt_path} looks like a pretrained EBM, but no backbone "
+                f"was found in {_default_cfg_path_from_ckpt(ckpt_path)}."
+            )
+        model = PretrainedEnergyScorer(
+            backbone_path=backbone,
+            tokenizer_size=len(tok),
+            pad_token_id=pad_id,
+            dropout=float(cfg.get("dropout", dropout)),
+            freeze_backbone=bool(cfg.get("freeze_backbone", False)),
+            pooling=str(cfg.get("pooling", "cls_mean")),
+            gradient_checkpointing=False,
+        ).to(device)
+        cls_id = int(cfg.get("cls_id", cls_id))
+    else:
+        model = TransEBM(
+            vocab_size=len(tok),
+            d_model=int(cfg.get("d_model", d_model)),
+            n_heads=int(cfg.get("n_heads", n_heads)),
+            n_layers=int(cfg.get("n_layers", n_layers)),
+            dropout=float(cfg.get("dropout", dropout)),
+        ).to(device)
+
+        if len(tok) != model.emb.num_embeddings:
+            model.resize_token_embeddings(len(tok))
+
     model.load_state_dict(state)
     model.eval()
 
@@ -70,6 +115,8 @@ def load_ebm_scorer(
         "cls_id": cls_id,
         "pad_id": pad_id,
         "device": device,
+        "arch": cfg.get("arch", "TransEBM"),
+        "max_length": int(cfg.get("max_length", 2048)),
     }
 
 
@@ -99,7 +146,7 @@ def score_one(question: str, answer: str, max_length: int = 2048, scorer: Option
     model = scorer["model"]
     device = scorer["device"]
 
-    sep = tok.eos_token if tok.eos_token is not None else "\n"
+    sep = tok.sep_token or tok.eos_token or "\n"
     combined = f"{question}{sep}{answer}"
     ids = tok.encode(
         combined,

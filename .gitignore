@@ -6,4 +6,7 @@ __pycache__/
 *.pyc
 *.log
 *.pkl
+rubrics/
+output/
+train/
 "@ | Out-File -Encoding utf8 .gitignore

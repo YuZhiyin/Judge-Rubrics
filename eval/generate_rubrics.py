@@ -27,7 +27,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from prompts import RUBRIC_GEN_SYSTEM, RUBRIC_GEN_USER_TEMPLATE
-from eval.evaluate import (  
+from evaluate import (  
     PairwiseSample,
     load_rewardbench,
     load_rmbench,
@@ -37,7 +37,7 @@ from eval.evaluate import (
     init_generation_backend,
     generate_candidates_with_backend,
 )
-from EnergyORM.rubric_selection import build_rubric_selector, select_best_rubric, normalize_rubric_text
+from Judge_Rubrics.rubric_selection import build_rubric_selector, select_best_rubric, normalize_rubric_text
 
 
 # ============================================================================

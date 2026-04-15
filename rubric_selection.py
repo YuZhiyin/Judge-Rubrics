@@ -3,15 +3,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from EnergyORM.global_scorer import build_global_scorer
-from EnergyORM.group_scorer import GroupRubricScorer
-from EnergyORM.hierarchical_scorer import HierarchicalRubricScorer, HierarchicalWeights
-from EnergyORM.prepare_hierarchical_data import DEFAULT_ARTIFACT_DIR, DEFAULT_INPUT_FILE, ensure_training_artifacts
-from EnergyORM.score import LocalQualityScorer, load_ebm_scorer, score_one
+from Judge_Rubrics.global_scorer import build_global_scorer
+from Judge_Rubrics.group_scorer import GroupRubricScorer
+from Judge_Rubrics.hierarchical_scorer import HierarchicalRubricScorer, HierarchicalWeights
+from Judge_Rubrics.prepare_hierarchical_data import DEFAULT_ARTIFACT_DIR, DEFAULT_INPUT_FILE, ensure_training_artifacts
+from Judge_Rubrics.score import LocalQualityScorer, load_ebm_scorer, score_one
 
+import re
 
 def normalize_rubric_text(rubric_text: str) -> str:
     text = (rubric_text or "").strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"</?think>", "", text, flags=re.IGNORECASE)
+    text = text.strip()
+
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+
     if not text:
         return "1. (empty rubric)"
     return text

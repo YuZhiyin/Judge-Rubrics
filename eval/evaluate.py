@@ -39,7 +39,7 @@ except ModuleNotFoundError:
 # Shared modules live under the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from prompts import (  # noqa: E402
+from Judge_Rubrics.prompts import (  # noqa: E402
     RUBRIC_JUDGE_SYSTEM,
     RUBRIC_JUDGE_USER_TEMPLATE,
     DIRECT_JUDGE_SYSTEM,
@@ -47,7 +47,7 @@ from prompts import (  # noqa: E402
     RUBRIC_GEN_SYSTEM,
     RUBRIC_GEN_USER_TEMPLATE,
 )
-from rubric_selection import build_rubric_selector, select_best_rubric, normalize_rubric_text
+from Judge_Rubrics.rubric_selection import build_rubric_selector, select_best_rubric, normalize_rubric_text
 
 
 # ============================================================================
@@ -669,7 +669,14 @@ def main():
                     if sid:
                         rubrics_by_sid[sid] = rec
 
-            formatted_rubrics = [rubrics_by_sid.get(s.sid, {}).get("formatted_rubric", "") for s in samples]
+            # formatted_rubrics = [rubrics_by_sid.get(s.sid, {}).get("formatted_rubric", "") for s in samples]
+            formatted_rubrics = [
+                normalize_rubric_text(
+                    rubrics_by_sid.get(s.sid, {}).get("formatted_rubric", "")
+                    or rubrics_by_sid.get(s.sid, {}).get("raw_rubric_output", "")
+                )
+                for s in samples
+            ]
             rubric_raw_outputs = [rubrics_by_sid.get(s.sid, {}).get("raw_rubric_output", "") for s in samples]
             rubric_selection_metadata = [rubrics_by_sid.get(s.sid, {}).get("extra_info", {}) for s in samples]
             matched = sum(1 for r in formatted_rubrics if r)

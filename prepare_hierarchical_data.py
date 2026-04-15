@@ -11,7 +11,7 @@ from datasets import load_dataset
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from domain_mapping import (
+from Judge_Rubrics.domain_mapping import (
     attach_domain_to_records,
     build_domain_summary,
     pretty_print_summary,
