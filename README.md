@@ -147,74 +147,85 @@ python Judge-Rubrics/run_hierarchical_demo.py \
   --local-tokenizer Judge-Rubrics/ebm_v3_deberta_base_unfrozen_mean_tokenizer
 ```
 
-## Generate Rubrics for Evaluation
+## Generate Rubrics for Evaluation & Evaluate a Judge
 
-Use the shell wrapper:
-
-```bash
-bash Judge-Rubrics/eval/run_generate_rubrics.sh \
-  --sft_model_path /path/to/rubric-generator \
-  --benchmark rewardbench \
-  --test_parquet Judge-Rubrics/eval/eval_dataset/reward-bench/data/filtered-00000-of-00001.parquet \
-  --selection_strategy hierarchical \
-  --local_ckpt Judge-Rubrics/ebm_v3_deberta_base_unfrozen_mean_model.pt \
-  --local_tokenizer Judge-Rubrics/ebm_v3_deberta_base_unfrozen_mean_tokenizer \
-  --output_file Judge-Rubrics/eval/rubrics/rubrics_rewardbench.jsonl
+Local_EBM:
+```
+nohup python generate_rubrics.py \
+  --sft_model_path /mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B \
+  --benchmark rmb \
+  --rmb_json /mnt/shared-storage-user/yuzhiyin/Judge_Rubrics/eval/eval_dataset/RMB_dataset/Pairwise_set \
+  --rmb_json_dir \
+  --output_file ./rubrics/rubrics_bestofn_local_rmb.jsonl \
+  --num_candidates 4 \
+  --selection_strategy local_ebm \
+  --local_ckpt /mnt/shared-storage-user/yuzhiyin/EnergyORM/ebm_v3_deberta_base_unfrozen_mean_lr2e6_dropout01_model.pt \
+  --local_tokenizer /mnt/shared-storage-user/yuzhiyin/EnergyORM/ebm_v3_deberta_base_unfrozen_mean_lr2e6_dropout01_tokenizer \
+  --tensor_parallel_size 2 \
+  --batch_size 256 > generate_rubric_bestofn_local_rmb.log 2>&1 &
 ```
 
-Supported benchmarks for rubric generation:
+```
+bash run_eval.sh \
+  --model_path /mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B \
+  --benchmark rewardbench \
+  --prompt_type rubric_judge \
+  --rubrics_file /mnt/shared-storage-user/yuzhiyin/Judge_Rubrics/eval/rubrics/rubrics_bestofn_local_global_rewardbench.jsonl \
+  --tensor_parallel_size 2 \
+  --batch_size 256 \
+  --gpu_memory_utilization 0.95 \
+  --max_tokens 8192 \
+  --seed 42 \
+  --output_root /mnt/shared-storage-user/yuzhiyin/Judge_Rubrics/output/output_bestofn_local_global_judge_rewardbench \
+  --shuffle 
+```
 
-- `rewardbench`
-- `rmbench`
-- `rmb`
-- `openrubrics`
-
-Rubric selection strategies:
-
-- `first`: use the first generated rubric
-- `local_ebm`: choose the candidate with the lowest local EBM energy
-- `hierarchical`: combine local, group, and global rubric scores
-
-## Evaluate a Judge
-
-Direct judge:
-
-```bash
-bash Judge-Rubrics/eval/run_eval.sh \
-  --model_path /path/to/judge-model \
+DIRECT:
+```
+bash eval/run_eval.sh \
+  --model_path /mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B \
   --benchmark rewardbench \
   --prompt_type direct_judge \
-  --test_parquet Judge-Rubrics/eval/eval_dataset/reward-bench/data/filtered-00000-of-00001.parquet \
-  --output_root Judge-Rubrics/eval/eval_results
+  --tensor_parallel_size 2 \
+  --batch_size 256 \
+  --gpu_memory_utilization 0.95 \
+  --max_tokens 8192 \
+  --seed 42 \
+  --output_root ./output/output_direct_judge \
+  --shuffle 
 ```
 
-Rubric-guided judge with pre-generated rubrics:
+Rubric Judge:
+```
+nohup python eval/generate_rubrics.py \
+  --sft_model_path /mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B \
+  --benchmark rmb \
+  --rmb_json /mnt/shared-storage-user/yuzhiyin/Judge_Rubrics/eval/eval_dataset/RMB_dataset/Pairwise_set \
+  --rmb_json_dir \
+  --output_file ./rubrics/rubrics_rmb_naive_.jsonl \
+  --num_candidates 1 \
+  --selection_strategy first \
+  --tensor_parallel_size 2 \
+  --batch_size 256 > generate_rubric_naive.log 2>&1 &
+```
 
-```bash
-bash Judge-Rubrics/eval/run_eval.sh \
-  --model_path /path/to/judge-model \
-  --benchmark rewardbench \
+```
+bash eval/run_eval.sh \
+  --model_path /mnt/shared-storage-user/ma4tool-shared/hug_ckpts/Qwen3/Qwen3-4B/Qwen3-4B \
+  --benchmark rmb \
+  --rmb_json /mnt/shared-storage-user/yuzhiyin/Judge_Rubrics/eval/eval_dataset/RMB_dataset/Pairwise_set \
+  --rmb_json_dir \
   --prompt_type rubric_judge \
-  --test_parquet Judge-Rubrics/eval/eval_dataset/reward-bench/data/filtered-00000-of-00001.parquet \
-  --rubrics_file Judge-Rubrics/eval/rubrics/rubrics_rewardbench.jsonl \
-  --output_root Judge-Rubrics/eval/eval_results
+  --rubrics_file ./rubrics/rubrics_rmb_naive_.jsonl \
+  --tensor_parallel_size 2 \
+  --batch_size 256 \
+  --gpu_memory_utilization 0.95 \
+  --max_tokens 8192 \
+  --seed 42 \
+  --output_root /mnt/shared-storage-user/yuzhiyin/Judge_Rubrics/output/output_rubric_judge_rmb \
+  --shuffle 
 ```
 
-Rubric-guided judge with on-the-fly rubric generation:
-
-```bash
-bash Judge-Rubrics/eval/run_eval.sh \
-  --model_path /path/to/judge-model \
-  --benchmark rewardbench \
-  --prompt_type rubric_judge \
-  --test_parquet Judge-Rubrics/eval/eval_dataset/reward-bench/data/filtered-00000-of-00001.parquet \
-  --generate_rubrics_on_the_fly \
-  --rubric_generator_model_path /path/to/rubric-generator \
-  --rubric_selection_strategy hierarchical \
-  --local_ckpt Judge-Rubrics/ebm_v3_deberta_base_unfrozen_mean_model.pt \
-  --local_tokenizer Judge-Rubrics/ebm_v3_deberta_base_unfrozen_mean_tokenizer \
-  --output_root Judge-Rubrics/eval/eval_results
-```
 
 Supported evaluation benchmarks:
 
